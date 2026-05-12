@@ -1,5 +1,6 @@
 "use client";
 
+import Image from "next/image";
 import { useEffect, useMemo, useState } from "react";
 import {
   CATEGORY_META,
@@ -419,9 +420,22 @@ function EventCard({ event, today }: { event: RaceEvent; today: Date }) {
 
   return (
     <li
-      className={`group rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4 shadow-sm transition-shadow hover:shadow-md sm:p-5 ${isPast ? "opacity-60" : ""}`}
+      className={`group overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--surface)] shadow-sm transition-shadow hover:shadow-md ${isPast ? "opacity-60" : ""}`}
     >
-      <div className="flex gap-4">
+      {event.imageUrl && (
+        <div className="relative aspect-[16/7] w-full overflow-hidden bg-[var(--surface-muted)]">
+          <Image
+            src={event.imageUrl}
+            alt={event.title}
+            fill
+            sizes="(min-width: 768px) 720px, 100vw"
+            className="object-cover transition-transform duration-300 group-hover:scale-[1.02]"
+            unoptimized
+          />
+          <div className="pointer-events-none absolute inset-x-0 bottom-0 h-12 bg-gradient-to-t from-black/40 to-transparent" />
+        </div>
+      )}
+      <div className="flex gap-4 p-4 sm:p-5">
         <div
           className={`flex h-16 w-16 shrink-0 flex-col items-center justify-center rounded-xl bg-[var(--surface-muted)] ring-1 ${meta.ring}`}
         >

@@ -23,6 +23,8 @@ export type RaceEvent = {
   entryUrl?: string;
   marshalUrl?: string;
   detailsUrl?: string;
+  imageUrl?: string;
+  source?: "seed" | "vscc.co.uk";
 };
 
 export const CATEGORY_META: Record<
@@ -237,8 +239,14 @@ export const SEED_EVENTS: RaceEvent[] = [
   },
 ];
 
+import scraped from "../data/events.json";
+
+const SCRAPED_EVENTS = scraped as { events: RaceEvent[] };
+
 export function getEvents(): RaceEvent[] {
-  return [...SEED_EVENTS].sort((a, b) =>
-    a.startDate.localeCompare(b.startDate),
-  );
+  const source =
+    SCRAPED_EVENTS.events && SCRAPED_EVENTS.events.length > 0
+      ? SCRAPED_EVENTS.events
+      : SEED_EVENTS;
+  return [...source].sort((a, b) => a.startDate.localeCompare(b.startDate));
 }

@@ -1,0 +1,31 @@
+{
+  "scrapedAt": "2026-05-12T21:10:39.714Z",
+  "source": "https://vscc.co.uk",
+  "diagnostics": {
+    "/": {
+      "ok": false,
+      "error": "Error: 403 Forbidden"
+    },
+    "/events": {
+      "ok": false,
+      "error": "Error: 403 Forbidden"
+    },
+    "/calendar": {
+      "ok": false,
+      "error": "Error: 403 Forbidden"
+    },
+    "/whats-on": {
+      "ok": false,
+      "error": "Error: 403 Forbidden"
+    },
+    "/diary": {
+      "ok": false,
+      "error": "Error: 403 Forbidden"
+    },
+    "/race-meetings": {
+      "ok": false,
+      "error": "Error: 403 Forbidden"
+    }
+  },
+  "events": []
+}
