@@ -425,7 +425,7 @@ function EventCard({ event, today }: { event: RaceEvent; today: Date }) {
       {event.imageUrl && (
         <div className="relative aspect-[16/7] w-full overflow-hidden bg-[var(--surface-muted)]">
           <Image
-            src={event.imageUrl}
+            src={`/api/img?u=${encodeURIComponent(event.imageUrl)}`}
             alt={event.title}
             fill
             sizes="(min-width: 768px) 720px, 100vw"
