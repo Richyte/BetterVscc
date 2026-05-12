@@ -1,20 +1,24 @@
 /**
  * Daily scraper for vscc.co.uk → src/data/events.json.
  *
- * Run locally with: npm run scrape
+ * Usage:
+ *   npm run scrape                     # fetch /page/events live
+ *   npm run scrape -- --file path.html # parse a local HTML sample (no network)
  *
  * Strategy:
- *   1) Try every configured page for JSON-LD schema.org Event blocks.
- *   2) Fall back to a CSS-selector pass over candidate "event card" elements.
- *   3) Deduplicate by (title + start date), categorise heuristically, hot-link
- *      images by absolute URL so next/image can serve them via remotePatterns.
+ *   1) Primary: parse vscc.co.uk's Bootstrap card layout — every event is a
+ *      `.card` with header (event-bg-N colour + title + eventID), body
+ *      (background-image inline style for the photo + Info/Enter/Marshal/Regs
+ *      action buttons), and footer (date text like "23 May 2026").
+ *   2) Backup: schema.org JSON-LD Event blocks if any page emits them.
  *
- * Tune SELECTORS once you've seen the real markup — the JSON-LD path is the
- * most resilient and should be tried first regardless.
+ * The `event-bg-N` class on the header/footer is vscc's internal event type
+ * code. Observed mapping: 1=Driving Test, 2=Race, 3=Speed, 4=Trial,
+ * 5=Rally, 8=Tour, 22=AutoSolo. Anything else falls back to keyword guessing.
  */
 import * as cheerio from "cheerio";
 import type { AnyNode } from "domhandler";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -51,41 +55,33 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(HERE, "..", "..");
 const OUTPUT_PATH = resolve(REPO_ROOT, "src/data/events.json");
 
-const ORIGIN = "https://vscc.co.uk";
+const ORIGIN = "https://www.vscc.co.uk";
 
-// vscc.co.uk routes every section under /page/<slug>. The homepage stays at "/".
-const CANDIDATE_PATHS = [
-  "/",
-  "/page/events",
-  "/page/calendar",
-  "/page/whats-on",
-  "/page/diary",
-  "/page/race-meetings",
-  "/page/news",
-];
+const CANDIDATE_PATHS = ["/page/events"];
 
 const USER_AGENT =
   "VSCC-Calendar-Scraper/1.0 (+https://vscc.co.uk; contact: web@vscc.co.uk)";
 
-const SELECTORS = {
-  card:
-    "[class*='event'], article.event, .event-card, .event-listing, li.event, .tribe-events-calendar-list__event",
-  title: "h2, h3, .event-title, .tribe-events-calendar-list__event-title",
-  date: "time[datetime], .event-date, .tribe-events-calendar-list__event-datetime",
-  venue: ".event-venue, .venue, .tribe-events-venue-details, address",
-  description: ".event-description, .event-excerpt, p",
-  link: "a[href]",
-  image: "img",
+// event-bg-N codes observed on /page/events. Anything not in this map falls
+// through to keyword-based guessing in `categorise()`.
+const EVENT_BG_CATEGORY: Record<string, EventCategory> = {
+  "1": "autosolo",   // Driving Test — closest fit in our taxonomy
+  "2": "race",
+  "3": "speed",      // Hillclimb / Sprint
+  "4": "trial",
+  "5": "rally",
+  "8": "tour",
+  "22": "autosolo",
 };
 
 const CATEGORY_KEYWORDS: Record<EventCategory, string[]> = {
-  race: ["race", "racing", "grand prix", "trophy", "gp", "circuit"],
+  race: ["race", "racing", "trophy", "circuit", "grand prix"],
   trial: ["trial"],
   tour: ["tour", "touring"],
   rally: ["rally", "navigation", "regularity"],
   autosolo: ["autosolo", "auto solo", "driving test"],
   speed: ["hillclimb", "hill climb", "sprint", "speed"],
-  marshalling: ["marshal", "marshall", "training"],
+  marshalling: ["marshal", "marshall", "training day"],
   social: [
     "dinner",
     "social",
@@ -98,40 +94,61 @@ const CATEGORY_KEYWORDS: Record<EventCategory, string[]> = {
 };
 
 const REGION_KEYWORDS: Record<string, string[]> = {
-  Midlands: ["silverstone", "shelsley", "mallory", "donington", "leicester", "warwick", "northants"],
-  "South West": ["prescott", "castle combe", "thruxton", "exmoor", "cotswold", "gloucester", "somerset", "devon"],
-  "North West": ["oulton", "lakeland", "cumbria", "cheshire", "lancashire"],
-  "North East": ["elvington", "yorkshire", "harewood"],
+  Midlands: ["silverstone", "shelsley", "mallory", "donington", "leicester", "warwick", "northants", "loton"],
+  "South West": ["prescott", "castle combe", "thruxton", "exmoor", "cotswold", "gloucester", "somerset", "devon", "dorset", "cornwall"],
+  "North West": ["oulton", "lakeland", "cumbria", "cumbrian", "cheshire", "lancashire", "lancs"],
+  "North East": ["elvington", "yorkshire", "harewood", "lincolnshire"],
   Scotland: ["scottish", "perthshire", "highland", "trossachs", "knockhill"],
   Wales: ["welsh", "brecon", "wye", "anglesey"],
   London: ["london", "rac club", "pall mall"],
-  "South East": ["goodwood", "brands hatch", "snetterton", "kent", "sussex", "surrey"],
+  "South East": ["goodwood", "brands hatch", "snetterton", "kent", "sussex", "surrey", "hertfordshire", "berkshire", "buckinghamshire", "oxfordshire", "norfolk"],
 };
 
 type ScrapedEvent = Omit<RaceEvent, "source"> & { source: "vscc.co.uk" };
 
+type SourceInput = { url: string; html: string; ok: true } | { url: string; ok: false; error: string };
+
 async function main() {
+  const args = parseArgs(process.argv.slice(2));
+
+  const inputs: SourceInput[] = [];
+  if (args.file) {
+    try {
+      const html = await readFile(args.file, "utf8");
+      inputs.push({ url: `${ORIGIN}/page/events`, html, ok: true });
+      console.log(`Reading local sample: ${args.file}`);
+    } catch (err) {
+      console.error(`Failed to read ${args.file}: ${String(err)}`);
+      process.exit(1);
+    }
+  } else {
+    for (const path of CANDIDATE_PATHS) {
+      const url = `${ORIGIN}${path}`;
+      try {
+        const html = await fetchHtml(url);
+        inputs.push({ url, html, ok: true });
+      } catch (err) {
+        inputs.push({ url, ok: false, error: String(err) });
+      }
+    }
+  }
+
   const collected = new Map<string, ScrapedEvent>();
   const diagnostics: Record<string, unknown> = {};
 
-  for (const path of CANDIDATE_PATHS) {
-    const url = `${ORIGIN}${path}`;
-    let html: string;
-    try {
-      html = await fetchHtml(url);
-    } catch (err) {
-      diagnostics[path] = { ok: false, error: String(err) };
+  for (const input of inputs) {
+    if (!input.ok) {
+      diagnostics[input.url] = { ok: false, error: input.error };
       continue;
     }
-    const $ = cheerio.load(html);
-
-    const jsonLd = extractFromJsonLd($, url);
-    const selector = extractFromSelectors($, url);
-    const found = dedupe([...jsonLd, ...selector]);
-    diagnostics[path] = {
+    const $ = cheerio.load(input.html);
+    const cards = extractFromVsccCards($, input.url);
+    const jsonLd = extractFromJsonLd($, input.url);
+    const found = dedupe([...cards, ...jsonLd]);
+    diagnostics[input.url] = {
       ok: true,
+      cardEvents: cards.length,
       jsonLdEvents: jsonLd.length,
-      selectorEvents: selector.length,
       kept: found.length,
     };
     for (const ev of found) {
@@ -155,17 +172,24 @@ async function main() {
   await writeFile(OUTPUT_PATH, JSON.stringify(payload, null, 2) + "\n", "utf8");
 
   console.log(`Scraped ${events.length} event(s) → ${OUTPUT_PATH}`);
-  for (const [path, info] of Object.entries(diagnostics)) {
-    console.log(`  ${path}: ${JSON.stringify(info)}`);
+  for (const [k, info] of Object.entries(diagnostics)) {
+    console.log(`  ${k}: ${JSON.stringify(info)}`);
   }
   if (events.length === 0) {
     console.log(
-      "\nNo events parsed. Inspect a saved sample of the HTML, then tune SELECTORS at the top of src/scripts/scrape.ts.",
-    );
-    console.log(
-      "Quick recon: curl -sS -A 'VSCC-Calendar-Scraper/1.0' https://vscc.co.uk/page/events > /tmp/vscc-events.html",
+      "\nNo events parsed. If the live site returned 403, try `npm run scrape -- --file /tmp/vscc-events.html` after saving a copy with curl.",
     );
   }
+}
+
+function parseArgs(argv: string[]): { file?: string } {
+  const out: { file?: string } = {};
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (a === "--file" || a === "-f") out.file = argv[++i];
+    else if (a.startsWith("--file=")) out.file = a.slice("--file=".length);
+  }
+  return out;
 }
 
 async function fetchHtml(url: string): Promise<string> {
@@ -178,6 +202,107 @@ async function fetchHtml(url: string): Promise<string> {
   });
   if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
   return res.text();
+}
+
+function extractFromVsccCards(
+  $: cheerio.CheerioAPI,
+  pageUrl: string,
+): ScrapedEvent[] {
+  const events: ScrapedEvent[] = [];
+
+  $("div.card.h-100").each((_, el) => {
+    const card = $(el);
+    const header = card.children(".card-header").first();
+    const body = card.children(".card-body").first();
+    const footer = card.children(".card-footer").first();
+
+    const titleLink = header.find("a").first();
+    const title = textOf(titleLink);
+    if (!title) return;
+
+    const detailHref = titleLink.attr("href");
+    const detailUrl = absolutise(detailHref, pageUrl);
+    const eventId = extractEventId(detailHref);
+
+    const startDate = toISODate(textOf(footer));
+    if (!startDate) return;
+
+    const bgCode = matchBgCode(header.attr("class")) ??
+      matchBgCode(footer.attr("class"));
+    const categoryFromBg = bgCode ? EVENT_BG_CATEGORY[bgCode] : undefined;
+    const category: EventCategory = categoryFromBg ?? categorise(title);
+
+    const imageUrl = extractBackgroundImage(body.attr("style"), pageUrl);
+
+    const buttons = body.find("a");
+    const entryUrl = pickButtonHref(buttons, "fa-key", pageUrl);
+    const marshalUrl = pickButtonHref(buttons, "fa-flag-checkered", pageUrl);
+
+    const region = guessRegion(title);
+    const venue = guessVenue(title);
+
+    events.push({
+      id: eventId ? `vscc-${eventId}` : slugify(`${title}-${startDate}`),
+      title,
+      startDate,
+      venue,
+      region,
+      category,
+      description: "",
+      entryUrl: entryUrl ?? detailUrl,
+      marshalUrl,
+      detailsUrl: detailUrl,
+      imageUrl,
+      source: "vscc.co.uk",
+    });
+  });
+
+  return events;
+}
+
+function matchBgCode(className: string | undefined): string | undefined {
+  if (!className) return undefined;
+  const match = className.match(/event-bg-(\d+)/);
+  return match?.[1];
+}
+
+function extractEventId(href: string | undefined): string | undefined {
+  if (!href) return undefined;
+  const match = href.match(/eventID=(\d+)/i);
+  return match?.[1];
+}
+
+function extractBackgroundImage(
+  style: string | undefined,
+  pageUrl: string,
+): string | undefined {
+  if (!style) return undefined;
+  // background-image: url("...") | url('...') | url(...)
+  const match = style.match(/background-image\s*:\s*url\(\s*(?:"|')?([^)"']+)/i);
+  return absolutise(match?.[1], pageUrl);
+}
+
+/**
+ * Returns the href of the first `<a>` whose descendants include an icon
+ * matching `iconClass`, but only if it's a real navigable link — links
+ * that just open a modal (data-toggle="modal", no href) are skipped.
+ */
+function pickButtonHref(
+  anchors: cheerio.Cheerio<AnyNode>,
+  iconClass: string,
+  pageUrl: string,
+): string | undefined {
+  let found: string | undefined;
+  anchors.each((_, a) => {
+    if (found) return;
+    const $a = anchors.eq(anchors.index(a));
+    const hasIcon = $a.find(`i.${iconClass}`).length > 0;
+    if (!hasIcon) return;
+    const href = $a.attr("href");
+    if (!href || href === "#" || href.startsWith("javascript:")) return;
+    found = absolutise(href, pageUrl);
+  });
+  return found;
 }
 
 function extractFromJsonLd(
@@ -194,8 +319,7 @@ function extractFromJsonLd(
     } catch {
       return;
     }
-    const nodes = flattenLd(parsed);
-    for (const node of nodes) {
+    for (const node of flattenLd(parsed)) {
       if (!isLdEvent(node)) continue;
       const ev = ldToEvent(node, pageUrl);
       if (ev) events.push(ev);
@@ -239,7 +363,7 @@ function ldToEvent(
   const startDate = toISODate(startRaw);
   if (!startDate) return null;
   const endDate = toISODate(asString(node.endDate));
-  const venue = lookupVenue(node.location) ?? "TBC";
+  const venue = lookupVenue(node.location) ?? guessVenue(title);
   const description = asString(node.description) ?? "";
   const image = pickImage(node.image, pageUrl);
   const url = absolutise(asString(node.url), pageUrl) ?? pageUrl;
@@ -262,48 +386,6 @@ function ldToEvent(
   };
 }
 
-function extractFromSelectors(
-  $: cheerio.CheerioAPI,
-  pageUrl: string,
-): ScrapedEvent[] {
-  const events: ScrapedEvent[] = [];
-  $(SELECTORS.card).each((_, el) => {
-    const card = $(el);
-    const title = textOf(card.find(SELECTORS.title).first());
-    const dateText = textOf(card.find(SELECTORS.date).first());
-    const datetimeAttr = card.find("time[datetime]").attr("datetime");
-    const startDate = toISODate(datetimeAttr ?? dateText);
-    if (!title || !startDate) return;
-
-    const venue = textOf(card.find(SELECTORS.venue).first()) || "TBC";
-    const description = textOf(card.find(SELECTORS.description).first());
-    const link = card.find(SELECTORS.link).first().attr("href");
-    const img = card.find(SELECTORS.image).first();
-    const imageUrl =
-      absolutise(img.attr("src"), pageUrl) ??
-      absolutise(img.attr("data-src"), pageUrl) ??
-      pickFromSrcset(img.attr("srcset"), pageUrl);
-    const category = categorise(`${title} ${description} ${venue}`);
-    const region = guessRegion(`${title} ${venue}`);
-    const url = absolutise(link, pageUrl) ?? pageUrl;
-
-    events.push({
-      id: slugify(`${title}-${startDate}`),
-      title,
-      startDate,
-      venue,
-      region,
-      category,
-      description: shorten(description),
-      entryUrl: url,
-      detailsUrl: url,
-      imageUrl,
-      source: "vscc.co.uk",
-    });
-  });
-  return events;
-}
-
 function dedupe(list: ScrapedEvent[]): ScrapedEvent[] {
   const seen = new Map<string, ScrapedEvent>();
   for (const ev of list) {
@@ -319,6 +401,8 @@ function dedupe(list: ScrapedEvent[]): ScrapedEvent[] {
       imageUrl: prev.imageUrl ?? ev.imageUrl,
       endDate: prev.endDate ?? ev.endDate,
       region: prev.region ?? ev.region,
+      entryUrl: prev.entryUrl ?? ev.entryUrl,
+      marshalUrl: prev.marshalUrl ?? ev.marshalUrl,
     });
   }
   return [...seen.values()];
@@ -370,19 +454,6 @@ function pickImage(image: unknown, pageUrl: string): string | undefined {
   return undefined;
 }
 
-function pickFromSrcset(
-  srcset: string | undefined,
-  pageUrl: string,
-): string | undefined {
-  if (!srcset) return undefined;
-  const candidates = srcset
-    .split(",")
-    .map((part) => part.trim().split(/\s+/))
-    .filter((p) => p[0]);
-  const last = candidates[candidates.length - 1]?.[0];
-  return absolutise(last, pageUrl);
-}
-
 function absolutise(
   href: string | undefined,
   pageUrl: string,
@@ -395,11 +466,41 @@ function absolutise(
   }
 }
 
+const MONTHS: Record<string, number> = {
+  jan: 1, january: 1,
+  feb: 2, february: 2,
+  mar: 3, march: 3,
+  apr: 4, april: 4,
+  may: 5,
+  jun: 6, june: 6,
+  jul: 7, july: 7,
+  aug: 8, august: 8,
+  sep: 9, sept: 9, september: 9,
+  oct: 10, october: 10,
+  nov: 11, november: 11,
+  dec: 12, december: 12,
+};
+
 function toISODate(input: string | undefined): string | undefined {
   if (!input) return undefined;
   const trimmed = input.trim();
+
+  // ISO already: 2026-05-23 (optionally with time)
   const iso = trimmed.match(/^\d{4}-\d{2}-\d{2}/);
   if (iso) return iso[0];
+
+  // VSCC card-footer format: "23 May 2026"
+  const dm = trimmed.match(/^(\d{1,2})\s+([A-Za-z]+)\s+(\d{4})/);
+  if (dm) {
+    const day = Number(dm[1]);
+    const month = MONTHS[dm[2].toLowerCase()];
+    const year = Number(dm[3]);
+    if (month && day >= 1 && day <= 31) {
+      return `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+    }
+  }
+
+  // Last-resort: Date.parse for anything else (e.g. JSON-LD timestamps)
   const parsed = new Date(trimmed);
   if (!Number.isNaN(parsed.getTime())) {
     const y = parsed.getUTCFullYear();
@@ -426,6 +527,19 @@ function guessRegion(haystack: string): string | undefined {
     if (keywords.some((k) => text.includes(k))) return region;
   }
   return undefined;
+}
+
+/**
+ * VSCC event cards don't carry a venue field — the title is usually either a
+ * circuit name (Donington, Mallory Park) or a county-flavoured tour name
+ * (Hertfordshire Tour, Cumbrian Tour). For the latter, strip the event-type
+ * suffix to leave just the location.
+ */
+function guessVenue(title: string): string {
+  return title
+    .replace(/\b(autosolo|hillclimb|hill climb|hill\s+climb|trial|tour|rally|driving tests?|race meeting|sprint|tests?)\b/gi, "")
+    .replace(/\s+/g, " ")
+    .trim() || title;
 }
 
 function shorten(text: string, max = 320): string {

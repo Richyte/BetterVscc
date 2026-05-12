@@ -467,11 +467,14 @@ function EventCard({ event, today }: { event: RaceEvent; today: Date }) {
             {event.title}
           </h4>
           <p className="mt-0.5 text-xs text-[var(--ink-muted)]">
-            {formatDateRange(event.startDate, event.endDate)} · {event.venue}
+            {formatDateRange(event.startDate, event.endDate)}
+            {event.venue ? ` · ${event.venue}` : ""}
           </p>
-          <p className="mt-2 text-sm leading-relaxed text-[var(--ink)]/85">
-            {event.description}
-          </p>
+          {event.description && (
+            <p className="mt-2 text-sm leading-relaxed text-[var(--ink)]/85">
+              {event.description}
+            </p>
+          )}
           <div className="mt-3 flex flex-wrap gap-2">
             {event.entryUrl && (
               <a
