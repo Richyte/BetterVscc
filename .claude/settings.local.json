@@ -2,7 +2,9 @@
   "permissions": {
     "allow": [
       "WebFetch(domain:vscc.co.uk)",
-      "PowerShell(npm *)"
+      "PowerShell(npm *)",
+      "Bash(git -C C:/dev/vscc add CLAUDE.md)",
+      "Bash(git -C C:/dev/vscc commit -m 'Document VSCC race calendar project scope in CLAUDE.md *)"
     ]
   }
 }
