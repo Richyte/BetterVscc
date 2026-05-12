@@ -53,13 +53,15 @@ const OUTPUT_PATH = resolve(REPO_ROOT, "src/data/events.json");
 
 const ORIGIN = "https://vscc.co.uk";
 
+// vscc.co.uk routes every section under /page/<slug>. The homepage stays at "/".
 const CANDIDATE_PATHS = [
   "/",
-  "/events",
-  "/calendar",
-  "/whats-on",
-  "/diary",
-  "/race-meetings",
+  "/page/events",
+  "/page/calendar",
+  "/page/whats-on",
+  "/page/diary",
+  "/page/race-meetings",
+  "/page/news",
 ];
 
 const USER_AGENT =
@@ -161,7 +163,7 @@ async function main() {
       "\nNo events parsed. Inspect a saved sample of the HTML, then tune SELECTORS at the top of src/scripts/scrape.ts.",
     );
     console.log(
-      "Quick recon: curl -sS -A 'VSCC-Calendar-Scraper/1.0' https://vscc.co.uk > /tmp/vscc.html",
+      "Quick recon: curl -sS -A 'VSCC-Calendar-Scraper/1.0' https://vscc.co.uk/page/events > /tmp/vscc-events.html",
     );
   }
 }

@@ -1,28 +1,32 @@
 {
-  "scrapedAt": "2026-05-12T21:10:39.714Z",
+  "scrapedAt": "2026-05-12T21:15:37.603Z",
   "source": "https://vscc.co.uk",
   "diagnostics": {
     "/": {
       "ok": false,
       "error": "Error: 403 Forbidden"
     },
-    "/events": {
+    "/page/events": {
       "ok": false,
       "error": "Error: 403 Forbidden"
     },
-    "/calendar": {
+    "/page/calendar": {
       "ok": false,
       "error": "Error: 403 Forbidden"
     },
-    "/whats-on": {
+    "/page/whats-on": {
       "ok": false,
       "error": "Error: 403 Forbidden"
     },
-    "/diary": {
+    "/page/diary": {
       "ok": false,
       "error": "Error: 403 Forbidden"
     },
-    "/race-meetings": {
+    "/page/race-meetings": {
+      "ok": false,
+      "error": "Error: 403 Forbidden"
+    },
+    "/page/news": {
       "ok": false,
       "error": "Error: 403 Forbidden"
     }
